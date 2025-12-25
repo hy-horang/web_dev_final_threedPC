@@ -1,0 +1,192 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+
+// --------------------------------------
+// 1. 유저 (User)
+// --------------------------------------
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  password  String?
+  nickname  String?
+  role      Role     @default(USER) // "USER" | "ADMIN"
+
+  // [추가] 소셜 로그인 관련 필드
+  provider  String?  // 예: "local", "google", "kakao", "firebase"
+  snsId     String?  // 소셜 제공자가 주는 고유 ID
+  
+  refreshToken String? //리프레쉬토큰
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  quotes    Quote[]
+  comments  Comment[]
+  likes     Like[]
+}
+
+// --------------------------------------
+// 2. 카테고리 (Category)
+// --------------------------------------
+model Category {
+  id       Int        @id @default(autoincrement())
+  name     String
+  parentId Int?
+  
+  parent   Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryHierarchy")
+  products Product[]
+}
+
+// --------------------------------------
+// 3. 상품 (Product)
+// --------------------------------------
+model Product {
+  id           Int      @id @default(autoincrement())
+  categoryId   Int
+  category     Category @relation(fields: [categoryId], references: [id])
+  
+  name         String
+  manufacturer String
+  price        Int
+  imageUrl     String?
+  isActive     Boolean  @default(true)
+  viewCount    Int      @default(0) // 조회수
+
+  specs        ProductSpec[] 
+  detailInfo   Json?    
+  
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  quoteItems   QuoteItem[]
+  priceHistory PriceHistory[]
+  comments     Comment[]      // 상품 댓글
+  likes        Like[]         // 상품 좋아요
+}
+
+// --------------------------------------
+// 4. 상품 상세 스펙 (Product Spec)
+// --------------------------------------
+model ProductSpec {
+  id        Int     @id @default(autoincrement())
+  productId Int
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  
+  key       String  // "Socket", "Memory Type"
+  value     String  // "LGA1700", "DDR5"
+  
+  @@index([key, value]) 
+}
+
+// --------------------------------------
+// 5. 견적서 (Quote)
+// --------------------------------------
+model Quote {
+  id          Int      @id @default(autoincrement())
+  userId      Int?     
+  user        User?    @relation(fields: [userId], references: [id])
+  
+  title       String
+  description String?  @db.Text
+  totalPrice  Int
+  shareUuid   String   @unique @default(uuid())
+  isPublic    Boolean  @default(false) // 커뮤니티 공개 여부
+  viewCount   Int      @default(0)     // 조회수
+
+  items       QuoteItem[]
+  comments    Comment[] // 견적서 댓글
+  likes       Like[]    // 견적서 추천
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// --------------------------------------
+// 6. 견적서 아이템 (Quote Item)
+// --------------------------------------
+model QuoteItem {
+  id        Int     @id @default(autoincrement())
+  quoteId   Int
+  quote     Quote   @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  
+  productId Int
+  product   Product @relation(fields: [productId], references: [id])
+  
+  quantity  Int     @default(1)
+  priceAt   Int     
+}
+
+// --------------------------------------
+// 7. 가격 변동 기록 (Price History)
+// --------------------------------------
+model PriceHistory {
+  id         Int      @id @default(autoincrement())
+  productId  Int
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  price      Int
+  recordedAt DateTime @default(now())
+
+  @@index([productId, recordedAt])
+}
+
+// --------------------------------------
+// 8. 댓글 (Comment) - New
+// --------------------------------------
+model Comment {
+  id        Int      @id @default(autoincrement())
+  content   String
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Polymorphic association (상품 댓글 or 견적서 댓글)
+  productId Int?
+  product   Product? @relation(fields: [productId], references: [id], onDelete: Cascade)
+  
+  quoteId   Int?
+  quote     Quote?   @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// --------------------------------------
+// 9. 좋아요/스크랩 (Like) - New
+// --------------------------------------
+model Like {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  productId Int?
+  product   Product? @relation(fields: [productId], references: [id], onDelete: Cascade)
+  
+  quoteId   Int?
+  quote     Quote?   @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, productId]) // 유저는 한 상품에 한 번만 좋아요 가능
+  @@unique([userId, quoteId])   // 유저는 한 견적에 한 번만 좋아요 가능
+}
+
+
+
+// user테이블에 Role이 가지는 속성, user와 admin말곤 없음
+enum Role {
+  USER 
+  ADMIN
+}

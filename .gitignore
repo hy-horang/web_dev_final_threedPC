@@ -1,0 +1,10 @@
+node_modules
+# Keep environment variables out of version control
+.env
+
+# Firebase service account keys (절대 공개되면 안 되는 민감한 정보)
+*-firebase-adminsdk-*.json
+firebase-adminsdk-*.json
+threedpc-adacf-firebase-adminsdk-fbsvc-633aa873e6.json
+
+/generated/prisma

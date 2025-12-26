@@ -1,13 +1,15 @@
 require('dotenv').config();
 
+// Swagger 설정
+const { swaggerUi, getSwaggerSpec } = require('../swagger.js');
 
 // prisma orm 세팅
 const { PrismaClient } = require('../generated/prisma/client');
 const { PrismaMariaDb } = require('@prisma/adapter-mariadb');
 
 const adapter = new PrismaMariaDb({
-  host: 'localhost',
-  port: 3306,
+  host: process.env.DATABASE_HOST || 'localhost',
+  port: parseInt(process.env.DATABASE_PORT || '3306'),
   user: process.env.DATABASE_USER,
   password: process.env.DATABASE_PASSWORD ,
   database: process.env.DATABASE_NAME ,
@@ -16,14 +18,46 @@ const adapter = new PrismaMariaDb({
 
 const prisma = new PrismaClient({ adapter });
 
+// 일관된 오류 응답 헬퍼 함수
+function sendErrorResponse(res, status, code, message, details = null) {
+  const errorResponse = {
+    timestamp: new Date().toISOString(),
+    path: res.req.originalUrl || res.req.url,
+    status,
+    code,
+    message
+  };
+  
+  if (details) {
+    errorResponse.details = details;
+  }
+  
+  res.status(status).json(errorResponse);
+}
 
 // express 세팅
 const express = require('express');
 const app = express();
 
 app.use(express.json());
-// 정적 파일 제공: public 폴더에 있는 클라이언트 예제 파일들 제공
-app.use(express.static('public'));
+// 정적 파일 제공: src 폴더에 있는 클라이언트 파일들 제공
+app.use(express.static('src'));
+
+// Swagger UI 설정
+const swaggerSpec = getSwaggerSpec();
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+  customCss: '.swagger-ui .topbar { display: none }',
+  customSiteTitle: 'Three D PC API Documentation',
+  customfavIcon: '/favicon.ico'
+}));
+
+// Health check 엔드포인트
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    timestamp: new Date().toISOString()
+  });
+});
 
 // Firebase 클라이언트 설정을 제공하는 API 엔드포인트
 // 클라이언트 설정은 공개되어도 되는 정보입니다 (브라우저에서 사용되므로 어차피 노출됨)
@@ -138,10 +172,10 @@ passport.use(
 // OAuth 시작 라우트 (브라우저에서 접속)
 app.get('/auth/kakao', passport.authenticate('kakao'));
 
-// 콜백 처리: JWT를 발급해 JSON으로 반환 (role 포함)
+// 콜백 처리: JWT를 발급해 쿼리 파라미터로 토큰을 전달하여 HTML 페이지로 리다이렉트
 app.get(
   '/auth/kakao/callback',
-  passport.authenticate('kakao', { session: false, failureRedirect: '/login' }),
+  passport.authenticate('kakao', { session: false, failureRedirect: '/login?error=kakao_auth_failed' }),
   (req, res) => {
     const accessToken = jwt.sign(
       { id: req.user.id, email: req.user.email, role: req.user.role },
@@ -153,7 +187,12 @@ app.get(
       process.env.JWT_REFRESH_SECRET || 'dev_refresh_secret',
       { expiresIn: '7d' }
     );
-    res.json({ accessToken, refreshToken, user: req.user });
+    // 토큰을 쿼리 파라미터로 전달하여 홈으로 리다이렉트 (클라이언트에서 처리)
+    const params = new URLSearchParams({
+      accessToken,
+      refreshToken
+    });
+    res.redirect(`/?${params.toString()}`);
   }
 );
 
@@ -165,19 +204,24 @@ app.get('/api/profile', passport.authenticate('jwt', { session: false }), async 
     const user = await prisma.user.findUnique({ where: { id: req.user.id } });
     res.json(user);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Get profile error', err);
+    sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
   }
 });
 
 // 토큰 갱신 엔드포인트: refreshToken으로 새로운 accessToken 발급
 app.post('/auth/refresh', async (req, res) => {
   const { refreshToken } = req.body;
-  if (!refreshToken) return res.status(401).json({ error: 'Refresh token required' });
+  if (!refreshToken) {
+    return sendErrorResponse(res, 401, 'AUTH_REFRESH_TOKEN_REQUIRED', 'Refresh token required');
+  }
 
   try {
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET || 'dev_refresh_secret');
     const user = await prisma.user.findUnique({ where: { id: decoded.id } });
-    if (!user) return res.status(401).json({ error: 'User not found' });
+    if (!user) {
+      return sendErrorResponse(res, 401, 'AUTH_USER_NOT_FOUND', 'User not found');
+    }
     
     const newAccessToken = jwt.sign(
       { id: user.id, email: user.email, role: user.role },
@@ -186,7 +230,7 @@ app.post('/auth/refresh', async (req, res) => {
     );
     res.json({ accessToken: newAccessToken });
   } catch (err) {
-    res.status(401).json({ error: 'Invalid refresh token' });
+    sendErrorResponse(res, 401, 'AUTH_INVALID_REFRESH_TOKEN', 'Invalid refresh token');
   }
 });
 
@@ -197,16 +241,19 @@ app.post('/auth/logout', passport.authenticate('jwt', { session: false }), async
     // 현재는 클라이언트에서 토큰을 제거하는 것으로 충분합니다
     res.json({ message: 'Logged out successfully' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Logout error', err);
+    sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
   }
 });
 
 // Role 기반 인가 미들웨어
 const checkRole = (...roles) => {
   return (req, res, next) => {
-    if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+    if (!req.user) {
+      return sendErrorResponse(res, 401, 'AUTH_UNAUTHORIZED', 'Unauthorized');
+    }
     if (!roles.includes(req.user.role)) {
-      return res.status(403).json({ error: 'Forbidden: insufficient permissions' });
+      return sendErrorResponse(res, 403, 'AUTH_INSUFFICIENT_PERMISSIONS', 'Forbidden: insufficient permissions');
     }
     next();
   };
@@ -222,7 +269,8 @@ app.get(
       const users = await prisma.user.findMany({ select: { id: true, email: true, nickname: true, role: true, createdAt: true } });
       res.json(users);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      console.error('Get users error', err);
+      sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
     }
   }
 );
@@ -236,7 +284,7 @@ app.put(
       const { userId } = req.params;
       // 본인 또는 ADMIN만 수정 가능
       if (req.user.id !== parseInt(userId) && req.user.role !== 'ADMIN') {
-        return res.status(403).json({ error: 'Forbidden: cannot modify other users' });
+        return sendErrorResponse(res, 403, 'AUTH_FORBIDDEN', 'Forbidden: cannot modify other users');
       }
       const { nickname } = req.body;
       const updated = await prisma.user.update({
@@ -245,7 +293,8 @@ app.put(
       });
       res.json(updated);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      console.error('Update profile error', err);
+      sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
     }
   }
 );
@@ -260,7 +309,7 @@ app.patch(
       const { userId } = req.params;
       const { role } = req.body; // 'USER' 또는 'ADMIN'
       if (!['USER', 'ADMIN'].includes(role)) {
-        return res.status(400).json({ error: 'Invalid role' });
+        return sendErrorResponse(res, 400, 'INVALID_ROLE', 'Invalid role', { role });
       }
       const updated = await prisma.user.update({
         where: { id: parseInt(userId) },
@@ -268,7 +317,8 @@ app.patch(
       });
       res.json(updated);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      console.error('Update user role error', err);
+      sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
     }
   }
 );
@@ -299,7 +349,9 @@ try {
 // 엔드포인트 이름을 /auth/google 로 사용합니다 (kakao와 동일 스타일).
 app.post('/auth/google', async (req, res) => {
   const { idToken } = req.body;
-  if (!idToken) return res.status(400).json({ error: 'idToken required' });
+  if (!idToken) {
+    return sendErrorResponse(res, 400, 'AUTH_ID_TOKEN_REQUIRED', 'idToken required');
+  }
   try {
     const decoded = await admin.auth().verifyIdToken(idToken);
     // decoded: { uid, email, name, picture, ... }
@@ -332,7 +384,7 @@ app.post('/auth/google', async (req, res) => {
     res.json({ accessToken, refreshToken, user });
   } catch (err) {
     console.error('verifyIdToken error', err);
-    res.status(401).json({ error: 'Invalid ID token' });
+    sendErrorResponse(res, 401, 'AUTH_INVALID_ID_TOKEN', 'Invalid ID token');
   }
 });
 
@@ -342,7 +394,7 @@ app.post('/auth/google', async (req, res) => {
 // ============================================
 
 // GET /api/products - 상품 목록 조회 (검색, 카테고리 필터, 페이징, 정렬)
-app.get('/products', async (req, res) => {
+app.get('/api/products', async (req, res) => {
   try {
     const {
       search,           // 검색어 (상품명, 제조사)
@@ -420,16 +472,16 @@ app.get('/products', async (req, res) => {
     });
   } catch (err) {
     console.error('Get products error', err);
-    res.status(500).json({ error: err.message });
+    sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
   }
 });
 
 // GET /api/products/:id - 특정 상품 상세 정보 조회 (스펙 포함)
-app.get('/products/:id', async (req, res) => {
+app.get('/api/products/:id', async (req, res) => {
   try {
     const productId = parseInt(req.params.id);
     if (isNaN(productId)) {
-      return res.status(400).json({ error: 'Invalid product ID' });
+      return sendErrorResponse(res, 400, 'INVALID_PRODUCT_ID', 'Invalid product ID', { productId: req.params.id });
     }
 
     const product = await prisma.product.findUnique({
@@ -445,7 +497,7 @@ app.get('/products/:id', async (req, res) => {
     });
 
     if (!product) {
-      return res.status(404).json({ error: 'Product not found' });
+      return sendErrorResponse(res, 404, 'PRODUCT_NOT_FOUND', 'Product not found', { productId });
     }
 
     // 조회수 증가 (비동기로 처리하여 응답 속도에 영향 없도록)
@@ -457,16 +509,16 @@ app.get('/products/:id', async (req, res) => {
     res.json(product);
   } catch (err) {
     console.error('Get product detail error', err);
-    res.status(500).json({ error: err.message });
+    sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
   }
 });
 
 // GET /api/products/:id/price-history - 특정 상품의 가격 변동 내역 조회 (차트용 데이터)
-app.get('/products/:id/price-history', async (req, res) => {
+app.get('/api/products/:id/price-history', async (req, res) => {
   try {
     const productId = parseInt(req.params.id);
     if (isNaN(productId)) {
-      return res.status(400).json({ error: 'Invalid product ID' });
+      return sendErrorResponse(res, 400, 'INVALID_PRODUCT_ID', 'Invalid product ID', { productId: req.params.id });
     }
 
     const { 
@@ -482,7 +534,7 @@ app.get('/products/:id/price-history', async (req, res) => {
     });
 
     if (!product) {
-      return res.status(404).json({ error: 'Product not found' });
+      return sendErrorResponse(res, 404, 'PRODUCT_NOT_FOUND', 'Product not found', { productId });
     }
 
     // 필터 조건
@@ -515,13 +567,13 @@ app.get('/products/:id/price-history', async (req, res) => {
     });
   } catch (err) {
     console.error('Get price history error', err);
-    res.status(500).json({ error: err.message });
+    sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
   }
 });
 
-// POST /products - [Admin] 신규 상품 등록
+// POST /api/products - [Admin] 신규 상품 등록
 app.post(
-  '/products',
+  '/api/products',
   passport.authenticate('jwt', { session: false }),
   checkRole('ADMIN'),
   async (req, res) => {
@@ -539,8 +591,8 @@ app.post(
 
       // 필수 필드 검증
       if (!categoryId || !name || !manufacturer || price === undefined) {
-        return res.status(400).json({ 
-          error: 'Missing required fields: categoryId, name, manufacturer, price' 
+        return sendErrorResponse(res, 400, 'MISSING_REQUIRED_FIELDS', 'Missing required fields: categoryId, name, manufacturer, price', {
+          provided: { categoryId, name, manufacturer, price }
         });
       }
 
@@ -549,7 +601,7 @@ app.post(
         where: { id: parseInt(categoryId) }
       });
       if (!category) {
-        return res.status(400).json({ error: 'Category not found' });
+        return sendErrorResponse(res, 400, 'CATEGORY_NOT_FOUND', 'Category not found', { categoryId });
       }
 
       // 상품 생성 (스펙 포함)
@@ -590,21 +642,21 @@ app.post(
       res.status(201).json(product);
     } catch (err) {
       console.error('Create product error', err);
-      res.status(500).json({ error: err.message });
+      sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
     }
   }
 );
 
-// PUT /products/:id - [Admin] 상품 정보 수정 (가격, 단종여부 등)
+// PUT /api/products/:id - [Admin] 상품 정보 수정 (가격, 단종여부 등)
 app.put(
-  '/products/:id',
+  '/api/products/:id',
   passport.authenticate('jwt', { session: false }),
   checkRole('ADMIN'),
   async (req, res) => {
     try {
       const productId = parseInt(req.params.id);
       if (isNaN(productId)) {
-        return res.status(400).json({ error: 'Invalid product ID' });
+        return sendErrorResponse(res, 400, 'INVALID_PRODUCT_ID', 'Invalid product ID', { productId: req.params.id });
       }
 
       const {
@@ -625,7 +677,7 @@ app.put(
       });
 
       if (!existingProduct) {
-        return res.status(404).json({ error: 'Product not found' });
+        return sendErrorResponse(res, 404, 'PRODUCT_NOT_FOUND', 'Product not found', { productId });
       }
 
       // 업데이트할 데이터 구성
@@ -690,21 +742,21 @@ app.put(
       res.json(product);
     } catch (err) {
       console.error('Update product error', err);
-      res.status(500).json({ error: err.message });
+      sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
     }
   }
 );
 
-// DELETE /products/:id - [Admin] 상품 삭제
+// DELETE /api/products/:id - [Admin] 상품 삭제
 app.delete(
-  '/products/:id',
+  '/api/products/:id',
   passport.authenticate('jwt', { session: false }),
   checkRole('ADMIN'),
   async (req, res) => {
     try {
       const productId = parseInt(req.params.id);
       if (isNaN(productId)) {
-        return res.status(400).json({ error: 'Invalid product ID' });
+        return sendErrorResponse(res, 400, 'INVALID_PRODUCT_ID', 'Invalid product ID', { productId: req.params.id });
       }
 
       // 상품 존재 확인
@@ -713,7 +765,7 @@ app.delete(
       });
 
       if (!product) {
-        return res.status(404).json({ error: 'Product not found' });
+        return sendErrorResponse(res, 404, 'PRODUCT_NOT_FOUND', 'Product not found', { productId });
       }
 
       // 상품 삭제 (CASCADE로 관련 데이터 자동 삭제)
@@ -724,17 +776,17 @@ app.delete(
       res.json({ message: 'Product deleted successfully' });
     } catch (err) {
       console.error('Delete product error', err);
-      res.status(500).json({ error: err.message });
+      sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
     }
   }
 );
 
-// GET /products/:id/related - 연관 상품 추천 (같은 카테고리 인기 상품 등)
-app.get('/products/:id/related', async (req, res) => {
+// GET /api/products/:id/related - 연관 상품 추천 (같은 카테고리 인기 상품 등)
+app.get('/api/products/:id/related', async (req, res) => {
   try {
     const productId = parseInt(req.params.id);
     if (isNaN(productId)) {
-      return res.status(400).json({ error: 'Invalid product ID' });
+      return sendErrorResponse(res, 400, 'INVALID_PRODUCT_ID', 'Invalid product ID', { productId: req.params.id });
     }
 
     const { limit = '5' } = req.query;
@@ -747,7 +799,7 @@ app.get('/products/:id/related', async (req, res) => {
     });
 
     if (!currentProduct) {
-      return res.status(404).json({ error: 'Product not found' });
+      return sendErrorResponse(res, 404, 'PRODUCT_NOT_FOUND', 'Product not found', { productId });
     }
 
     // 같은 카테고리의 다른 상품 중 인기 상품 조회 (조회수 기준)
@@ -780,7 +832,7 @@ app.get('/products/:id/related', async (req, res) => {
     });
   } catch (err) {
     console.error('Get related products error', err);
-    res.status(500).json({ error: err.message });
+    sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
   }
 });
 
@@ -790,7 +842,7 @@ app.get('/products/:id/related', async (req, res) => {
 // ============================================
 
 // GET /categories - 전체 카테고리 목록 조회 (계층형 트리 구조 반환)
-app.get('/categories', async (req, res) => {
+app.get('/api/categories', async (req, res) => {
   try {
     // 모든 카테고리 조회 (자식 포함)
     const allCategories = await prisma.category.findMany({
@@ -845,7 +897,7 @@ app.get('/categories', async (req, res) => {
     });
   } catch (err) {
     console.error('Get categories error', err);
-    res.status(500).json({ error: err.message });
+    sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
   }
 });
 
@@ -860,7 +912,7 @@ app.post(
 
       // 필수 필드 검증
       if (!name) {
-        return res.status(400).json({ error: 'Category name is required' });
+        return sendErrorResponse(res, 400, 'CATEGORY_NAME_REQUIRED', 'Category name is required');
       }
 
       // parentId가 제공된 경우 부모 카테고리 존재 확인
@@ -869,7 +921,7 @@ app.post(
           where: { id: parseInt(parentId) }
         });
         if (!parent) {
-          return res.status(400).json({ error: 'Parent category not found' });
+          return sendErrorResponse(res, 400, 'PARENT_CATEGORY_NOT_FOUND', 'Parent category not found', { parentId });
         }
       }
 
@@ -895,7 +947,7 @@ app.post(
       res.status(201).json(category);
     } catch (err) {
       console.error('Create category error', err);
-      res.status(500).json({ error: err.message });
+      sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
     }
   }
 );
@@ -909,7 +961,7 @@ app.put(
     try {
       const categoryId = parseInt(req.params.id);
       if (isNaN(categoryId)) {
-        return res.status(400).json({ error: 'Invalid category ID' });
+        return sendErrorResponse(res, 400, 'INVALID_CATEGORY_ID', 'Invalid category ID', { categoryId: req.params.id });
       }
 
       const { name, parentId } = req.body;
@@ -920,14 +972,14 @@ app.put(
       });
 
       if (!existingCategory) {
-        return res.status(404).json({ error: 'Category not found' });
+        return sendErrorResponse(res, 404, 'CATEGORY_NOT_FOUND', 'Category not found', { categoryId });
       }
 
       // 업데이트할 데이터 구성
       const updateData = {};
       if (name !== undefined) {
         if (!name || name.trim() === '') {
-          return res.status(400).json({ error: 'Category name cannot be empty' });
+          return sendErrorResponse(res, 400, 'CATEGORY_NAME_EMPTY', 'Category name cannot be empty');
         }
         updateData.name = name.trim();
       }
@@ -938,7 +990,7 @@ app.put(
         
         // 자기 자신을 부모로 설정하는 것 방지
         if (newParentId === categoryId) {
-          return res.status(400).json({ error: 'Category cannot be its own parent' });
+          return sendErrorResponse(res, 400, 'CATEGORY_SELF_PARENT', 'Category cannot be its own parent', { categoryId });
         }
 
         // 순환 참조 방지: 자식 카테고리를 부모로 설정하는 것 방지
@@ -953,7 +1005,7 @@ app.put(
           });
 
           if (!potentialParent) {
-            return res.status(400).json({ error: 'Parent category not found' });
+            return sendErrorResponse(res, 400, 'PARENT_CATEGORY_NOT_FOUND', 'Parent category not found', { parentId: newParentId });
           }
 
           // 순환 참조 방지: 모든 자식 카테고리 ID 수집하여 확인
@@ -991,7 +1043,10 @@ app.put(
 
           const descendantIds = await getAllDescendantIds(categoryId);
           if (descendantIds.includes(newParentId)) {
-            return res.status(400).json({ error: 'Cannot set a descendant category as parent (circular reference)' });
+            return sendErrorResponse(res, 400, 'CATEGORY_CIRCULAR_REFERENCE', 'Cannot set a descendant category as parent (circular reference)', {
+              categoryId,
+              parentId: newParentId
+            });
           }
         }
 
@@ -1018,7 +1073,7 @@ app.put(
       res.json(updated);
     } catch (err) {
       console.error('Update category error', err);
-      res.status(500).json({ error: err.message });
+      sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
     }
   }
 );
@@ -1047,14 +1102,14 @@ const optionalAuth = (req, res, next) => {
   }
 };
 
-// POST /quotes - 신규 견적서 생성 (임시 저장)
-app.post('/quotes', optionalAuth, async (req, res) => {
+// POST /api/quotes - 신규 견적서 생성 (임시 저장)
+app.post('/api/quotes', optionalAuth, async (req, res) => {
   try {
     const { title, description, items = [] } = req.body;
 
     // 필수 필드 검증
     if (!title || title.trim() === '') {
-      return res.status(400).json({ error: 'Title is required' });
+      return sendErrorResponse(res, 400, 'QUOTE_TITLE_REQUIRED', 'Title is required');
     }
 
     // items 검증 및 총 가격 계산
@@ -1065,7 +1120,7 @@ app.post('/quotes', optionalAuth, async (req, res) => {
       const { productId, quantity = 1 } = item;
       
       if (!productId) {
-        return res.status(400).json({ error: 'Product ID is required for each item' });
+        return sendErrorResponse(res, 400, 'QUOTE_ITEM_PRODUCT_ID_REQUIRED', 'Product ID is required for each item');
       }
 
       // 상품 존재 확인 및 가격 조회
@@ -1075,11 +1130,11 @@ app.post('/quotes', optionalAuth, async (req, res) => {
       });
 
       if (!product) {
-        return res.status(400).json({ error: `Product with ID ${productId} not found` });
+        return sendErrorResponse(res, 400, 'PRODUCT_NOT_FOUND', `Product with ID ${productId} not found`, { productId });
       }
 
       if (!product.isActive) {
-        return res.status(400).json({ error: `Product ${product.name} is not active` });
+        return sendErrorResponse(res, 400, 'PRODUCT_NOT_ACTIVE', `Product ${product.name} is not active`, { productId, productName: product.name });
       }
 
       const qty = parseInt(quantity) || 1;
@@ -1134,12 +1189,12 @@ app.post('/quotes', optionalAuth, async (req, res) => {
     res.status(201).json(quote);
   } catch (err) {
     console.error('Create quote error', err);
-    res.status(500).json({ error: err.message });
+    sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
   }
 });
 
-// GET /quotes - 공개된 견적서 목록 조회 (커뮤니티/랭킹)
-app.get('/quotes', async (req, res) => {
+// GET /api/quotes - 공개된 견적서 목록 조회 (커뮤니티/랭킹)
+app.get('/api/quotes', async (req, res) => {
   try {
     const {
       page = '1',
@@ -1218,12 +1273,12 @@ app.get('/quotes', async (req, res) => {
     });
   } catch (err) {
     console.error('Get quotes error', err);
-    res.status(500).json({ error: err.message });
+    sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
   }
 });
 
-// GET /quotes/me - 내가 만든 견적서 목록 조회
-app.get('/quotes/me', passport.authenticate('jwt', { session: false }), async (req, res) => {
+// GET /api/quotes/me - 내가 만든 견적서 목록 조회
+app.get('/api/quotes/me', passport.authenticate('jwt', { session: false }), async (req, res) => {
   try {
     const {
       page = '1',
@@ -1269,16 +1324,16 @@ app.get('/quotes/me', passport.authenticate('jwt', { session: false }), async (r
     });
   } catch (err) {
     console.error('Get my quotes error', err);
-    res.status(500).json({ error: err.message });
+    sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
   }
 });
 
-// GET /quotes/:id - 견적서 상세 조회 (포함된 부품 목록)
-app.get('/quotes/:id', optionalAuth, async (req, res) => {
+// GET /api/quotes/:id - 견적서 상세 조회 (포함된 부품 목록)
+app.get('/api/quotes/:id', optionalAuth, async (req, res) => {
   try {
     const quoteId = parseInt(req.params.id);
     if (isNaN(quoteId)) {
-      return res.status(400).json({ error: 'Invalid quote ID' });
+      return sendErrorResponse(res, 400, 'INVALID_QUOTE_ID', 'Invalid quote ID', { quoteId: req.params.id });
     }
 
     const quote = await prisma.quote.findUnique({
@@ -1311,13 +1366,13 @@ app.get('/quotes/:id', optionalAuth, async (req, res) => {
     });
 
     if (!quote) {
-      return res.status(404).json({ error: 'Quote not found' });
+      return sendErrorResponse(res, 404, 'QUOTE_NOT_FOUND', 'Quote not found', { quoteId });
     }
 
     // 공개되지 않은 견적서는 본인 또는 ADMIN만 조회 가능
     if (!quote.isPublic) {
       if (!req.user || (req.user.id !== quote.userId && req.user.role !== 'ADMIN')) {
-        return res.status(403).json({ error: 'Access denied' });
+        return sendErrorResponse(res, 403, 'QUOTE_ACCESS_DENIED', 'Access denied');
       }
     }
 
@@ -1330,12 +1385,12 @@ app.get('/quotes/:id', optionalAuth, async (req, res) => {
     res.json(quote);
   } catch (err) {
     console.error('Get quote detail error', err);
-    res.status(500).json({ error: err.message });
+    sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
   }
 });
 
-// GET /quotes/share/:uuid - 공유 링크(UUID)를 통한 비회원 견적 조회
-app.get('/quotes/share/:uuid', async (req, res) => {
+// GET /api/quotes/share/:uuid - 공유 링크(UUID)를 통한 비회원 견적 조회
+app.get('/api/quotes/share/:uuid', async (req, res) => {
   try {
     const { uuid } = req.params;
 
@@ -1369,7 +1424,7 @@ app.get('/quotes/share/:uuid', async (req, res) => {
     });
 
     if (!quote) {
-      return res.status(404).json({ error: 'Quote not found' });
+      return sendErrorResponse(res, 404, 'QUOTE_NOT_FOUND', 'Quote not found', { uuid });
     }
 
     // 조회수 증가 (비동기)
@@ -1381,19 +1436,19 @@ app.get('/quotes/share/:uuid', async (req, res) => {
     res.json(quote);
   } catch (err) {
     console.error('Get quote by UUID error', err);
-    res.status(500).json({ error: err.message });
+    sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
   }
 });
 
-// PUT /quotes/:id - 견적서 수정 (제목, 설명, 공개여부 변경)
+// PUT /api/quotes/:id - 견적서 수정 (제목, 설명, 공개여부 변경)
 app.put(
-  '/quotes/:id',
+  '/api/quotes/:id',
   passport.authenticate('jwt', { session: false }),
   async (req, res) => {
     try {
       const quoteId = parseInt(req.params.id);
       if (isNaN(quoteId)) {
-        return res.status(400).json({ error: 'Invalid quote ID' });
+        return sendErrorResponse(res, 400, 'INVALID_QUOTE_ID', 'Invalid quote ID', { quoteId: req.params.id });
       }
 
       const { title, description, isPublic } = req.body;
@@ -1404,19 +1459,19 @@ app.put(
       });
 
       if (!existingQuote) {
-        return res.status(404).json({ error: 'Quote not found' });
+        return sendErrorResponse(res, 404, 'QUOTE_NOT_FOUND', 'Quote not found', { quoteId });
       }
 
       // 본인 또는 ADMIN만 수정 가능
       if (existingQuote.userId !== req.user.id && req.user.role !== 'ADMIN') {
-        return res.status(403).json({ error: 'Forbidden: cannot modify other users\' quotes' });
+        return sendErrorResponse(res, 403, 'QUOTE_FORBIDDEN', 'Forbidden: cannot modify other users\' quotes');
       }
 
       // 업데이트할 데이터 구성
       const updateData = {};
       if (title !== undefined) {
         if (!title || title.trim() === '') {
-          return res.status(400).json({ error: 'Title cannot be empty' });
+          return sendErrorResponse(res, 400, 'QUOTE_TITLE_EMPTY', 'Title cannot be empty');
         }
         updateData.title = title.trim();
       }
@@ -1456,20 +1511,20 @@ app.put(
       res.json(updated);
     } catch (err) {
       console.error('Update quote error', err);
-      res.status(500).json({ error: err.message });
+      sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
     }
   }
 );
 
-// DELETE /quotes/:id - 견적서 삭제
+// DELETE /api/quotes/:id - 견적서 삭제
 app.delete(
-  '/quotes/:id',
+  '/api/quotes/:id',
   passport.authenticate('jwt', { session: false }),
   async (req, res) => {
     try {
       const quoteId = parseInt(req.params.id);
       if (isNaN(quoteId)) {
-        return res.status(400).json({ error: 'Invalid quote ID' });
+        return sendErrorResponse(res, 400, 'INVALID_QUOTE_ID', 'Invalid quote ID', { quoteId: req.params.id });
       }
 
       // 견적서 존재 확인
@@ -1478,12 +1533,12 @@ app.delete(
       });
 
       if (!quote) {
-        return res.status(404).json({ error: 'Quote not found' });
+        return sendErrorResponse(res, 404, 'QUOTE_NOT_FOUND', 'Quote not found', { quoteId });
       }
 
       // 본인 또는 ADMIN만 삭제 가능
       if (quote.userId !== req.user.id && req.user.role !== 'ADMIN') {
-        return res.status(403).json({ error: 'Forbidden: cannot delete other users\' quotes' });
+        return sendErrorResponse(res, 403, 'QUOTE_FORBIDDEN', 'Forbidden: cannot delete other users\' quotes');
       }
 
       // 견적서 삭제 (CASCADE로 관련 데이터 자동 삭제)
@@ -1494,26 +1549,26 @@ app.delete(
       res.json({ message: 'Quote deleted successfully' });
     } catch (err) {
       console.error('Delete quote error', err);
-      res.status(500).json({ error: err.message });
+      sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
     }
   }
 );
 
-// POST /quotes/:id/items - 견적서에 부품 추가
+// POST /api/quotes/:id/items - 견적서에 부품 추가
 app.post(
-  '/quotes/:id/items',
+  '/api/quotes/:id/items',
   passport.authenticate('jwt', { session: false }),
   async (req, res) => {
     try {
       const quoteId = parseInt(req.params.id);
       if (isNaN(quoteId)) {
-        return res.status(400).json({ error: 'Invalid quote ID' });
+        return sendErrorResponse(res, 400, 'INVALID_QUOTE_ID', 'Invalid quote ID', { quoteId: req.params.id });
       }
 
       const { productId, quantity = 1 } = req.body;
 
       if (!productId) {
-        return res.status(400).json({ error: 'Product ID is required' });
+        return sendErrorResponse(res, 400, 'PRODUCT_ID_REQUIRED', 'Product ID is required');
       }
 
       // 견적서 존재 확인 및 권한 확인
@@ -1522,12 +1577,12 @@ app.post(
       });
 
       if (!quote) {
-        return res.status(404).json({ error: 'Quote not found' });
+        return sendErrorResponse(res, 404, 'QUOTE_NOT_FOUND', 'Quote not found', { quoteId });
       }
 
       // 본인 또는 ADMIN만 수정 가능
       if (quote.userId !== req.user.id && req.user.role !== 'ADMIN') {
-        return res.status(403).json({ error: 'Forbidden: cannot modify other users\' quotes' });
+        return sendErrorResponse(res, 403, 'QUOTE_FORBIDDEN', 'Forbidden: cannot modify other users\' quotes');
       }
 
       // 상품 존재 확인
@@ -1537,11 +1592,11 @@ app.post(
       });
 
       if (!product) {
-        return res.status(400).json({ error: 'Product not found' });
+        return sendErrorResponse(res, 400, 'PRODUCT_NOT_FOUND', 'Product not found', { productId });
       }
 
       if (!product.isActive) {
-        return res.status(400).json({ error: `Product ${product.name} is not active` });
+        return sendErrorResponse(res, 400, 'PRODUCT_NOT_ACTIVE', `Product ${product.name} is not active`, { productId, productName: product.name });
       }
 
       const qty = parseInt(quantity) || 1;
@@ -1588,14 +1643,14 @@ app.post(
       res.status(201).json(result);
     } catch (err) {
       console.error('Add quote item error', err);
-      res.status(500).json({ error: err.message });
+      sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
     }
   }
 );
 
-// DELETE /quotes/:id/items/:itemId - 견적서에서 부품 제거
+// DELETE /api/quotes/:id/items/:itemId - 견적서에서 부품 제거
 app.delete(
-  '/quotes/:id/items/:itemId',
+  '/api/quotes/:id/items/:itemId',
   passport.authenticate('jwt', { session: false }),
   async (req, res) => {
     try {
@@ -1603,7 +1658,7 @@ app.delete(
       const itemId = parseInt(req.params.itemId);
 
       if (isNaN(quoteId) || isNaN(itemId)) {
-        return res.status(400).json({ error: 'Invalid quote ID or item ID' });
+        return sendErrorResponse(res, 400, 'INVALID_QUOTE_OR_ITEM_ID', 'Invalid quote ID or item ID', { quoteId: req.params.id, itemId: req.params.itemId });
       }
 
       // 견적서 존재 확인 및 권한 확인
@@ -1612,12 +1667,12 @@ app.delete(
       });
 
       if (!quote) {
-        return res.status(404).json({ error: 'Quote not found' });
+        return sendErrorResponse(res, 404, 'QUOTE_NOT_FOUND', 'Quote not found', { quoteId });
       }
 
       // 본인 또는 ADMIN만 수정 가능
       if (quote.userId !== req.user.id && req.user.role !== 'ADMIN') {
-        return res.status(403).json({ error: 'Forbidden: cannot modify other users\' quotes' });
+        return sendErrorResponse(res, 403, 'QUOTE_FORBIDDEN', 'Forbidden: cannot modify other users\' quotes');
       }
 
       // 부품 존재 확인
@@ -1626,7 +1681,7 @@ app.delete(
       });
 
       if (!quoteItem || quoteItem.quoteId !== quoteId) {
-        return res.status(404).json({ error: 'Quote item not found' });
+        return sendErrorResponse(res, 404, 'QUOTE_ITEM_NOT_FOUND', 'Quote item not found', { itemId, quoteId });
       }
 
       // 부품 제거 및 총 가격 업데이트
@@ -1654,14 +1709,14 @@ app.delete(
       res.json({ message: 'Quote item deleted successfully' });
     } catch (err) {
       console.error('Delete quote item error', err);
-      res.status(500).json({ error: err.message });
+      sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
     }
   }
 );
 
-// PUT /quotes/:id/items/:itemId - 견적서 내 부품 수량 변경
+// PUT /api/quotes/:id/items/:itemId - 견적서 내 부품 수량 변경
 app.put(
-  '/quotes/:id/items/:itemId',
+  '/api/quotes/:id/items/:itemId',
   passport.authenticate('jwt', { session: false }),
   async (req, res) => {
     try {
@@ -1669,18 +1724,18 @@ app.put(
       const itemId = parseInt(req.params.itemId);
 
       if (isNaN(quoteId) || isNaN(itemId)) {
-        return res.status(400).json({ error: 'Invalid quote ID or item ID' });
+        return sendErrorResponse(res, 400, 'INVALID_QUOTE_OR_ITEM_ID', 'Invalid quote ID or item ID', { quoteId: req.params.id, itemId: req.params.itemId });
       }
 
       const { quantity } = req.body;
 
       if (quantity === undefined || quantity === null) {
-        return res.status(400).json({ error: 'Quantity is required' });
+        return sendErrorResponse(res, 400, 'QUANTITY_REQUIRED', 'Quantity is required');
       }
 
       const qty = parseInt(quantity);
       if (isNaN(qty) || qty < 1) {
-        return res.status(400).json({ error: 'Quantity must be a positive integer' });
+        return sendErrorResponse(res, 400, 'INVALID_QUANTITY', 'Quantity must be a positive integer', { quantity });
       }
 
       // 견적서 존재 확인 및 권한 확인
@@ -1689,12 +1744,12 @@ app.put(
       });
 
       if (!quote) {
-        return res.status(404).json({ error: 'Quote not found' });
+        return sendErrorResponse(res, 404, 'QUOTE_NOT_FOUND', 'Quote not found', { quoteId });
       }
 
       // 본인 또는 ADMIN만 수정 가능
       if (quote.userId !== req.user.id && req.user.role !== 'ADMIN') {
-        return res.status(403).json({ error: 'Forbidden: cannot modify other users\' quotes' });
+        return sendErrorResponse(res, 403, 'QUOTE_FORBIDDEN', 'Forbidden: cannot modify other users\' quotes');
       }
 
       // 부품 존재 확인
@@ -1703,7 +1758,7 @@ app.put(
       });
 
       if (!quoteItem || quoteItem.quoteId !== quoteId) {
-        return res.status(404).json({ error: 'Quote item not found' });
+        return sendErrorResponse(res, 404, 'QUOTE_ITEM_NOT_FOUND', 'Quote item not found', { itemId, quoteId });
       }
 
       // 수량 변경 및 총 가격 업데이트
@@ -1743,7 +1798,7 @@ app.put(
       res.json(result);
     } catch (err) {
       console.error('Update quote item quantity error', err);
-      res.status(500).json({ error: err.message });
+      sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
     }
   }
 );
@@ -1752,18 +1807,18 @@ app.put(
 // 호환성 검사 API
 // ============================================
 
-// GET /compatibility/check - 견적서 내 부품 간 호환성 검사
-app.get('/compatibility/check', async (req, res) => {
+// GET /api/compatibility/check - 견적서 내 부품 간 호환성 검사
+app.get('/api/compatibility/check', async (req, res) => {
   try {
     const { quoteId } = req.query;
 
     if (!quoteId) {
-      return res.status(400).json({ error: 'quoteId is required' });
+      return sendErrorResponse(res, 400, 'QUOTE_ID_REQUIRED', 'quoteId is required');
     }
 
     const quoteIdNum = parseInt(quoteId);
     if (isNaN(quoteIdNum)) {
-      return res.status(400).json({ error: 'Invalid quote ID' });
+      return sendErrorResponse(res, 400, 'INVALID_QUOTE_ID', 'Invalid quote ID', { quoteId });
     }
 
     // 견적서 조회 (부품 및 스펙 포함)
@@ -1788,7 +1843,7 @@ app.get('/compatibility/check', async (req, res) => {
     });
 
     if (!quote) {
-      return res.status(404).json({ error: 'Quote not found' });
+      return sendErrorResponse(res, 404, 'QUOTE_NOT_FOUND', 'Quote not found', { quoteId: quoteIdNum });
     }
 
     if (quote.items.length === 0) {
@@ -2003,7 +2058,7 @@ app.get('/compatibility/check', async (req, res) => {
     });
   } catch (err) {
     console.error('Compatibility check error', err);
-    res.status(500).json({ error: err.message });
+    sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
   }
 });
 
@@ -2011,15 +2066,15 @@ app.get('/compatibility/check', async (req, res) => {
 // 견적서 복사 (Fork) API
 // ============================================
 
-// POST /quotes/:id/copy - 다른 사람의 견적을 내 견적함으로 복사해오기 (Fork 기능)
+// POST /api/quotes/:id/copy - 다른 사람의 견적을 내 견적함으로 복사해오기 (Fork 기능)
 app.post(
-  '/quotes/:id/copy',
+  '/api/quotes/:id/copy',
   passport.authenticate('jwt', { session: false }),
   async (req, res) => {
     try {
       const quoteId = parseInt(req.params.id);
       if (isNaN(quoteId)) {
-        return res.status(400).json({ error: 'Invalid quote ID' });
+        return sendErrorResponse(res, 400, 'INVALID_QUOTE_ID', 'Invalid quote ID', { quoteId: req.params.id });
       }
 
       // 원본 견적서 조회
@@ -2042,7 +2097,7 @@ app.post(
       });
 
       if (!originalQuote) {
-        return res.status(404).json({ error: 'Quote not found' });
+        return sendErrorResponse(res, 404, 'QUOTE_NOT_FOUND', 'Quote not found', { quoteId });
       }
 
       // 비활성화된 상품이 있는지 확인
@@ -2051,8 +2106,7 @@ app.post(
       );
 
       if (inactiveProducts.length > 0) {
-        return res.status(400).json({
-          error: 'Cannot copy quote with inactive products',
+        return sendErrorResponse(res, 400, 'QUOTE_HAS_INACTIVE_PRODUCTS', 'Cannot copy quote with inactive products', {
           inactiveProducts: inactiveProducts.map(item => ({
             productId: item.productId,
             productName: item.product.name
@@ -2111,7 +2165,7 @@ app.post(
       });
     } catch (err) {
       console.error('Copy quote error', err);
-      res.status(500).json({ error: err.message });
+      sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
     }
   }
 );
@@ -2120,21 +2174,21 @@ app.post(
 // 댓글 API 엔드포인트
 // ============================================
 
-// POST /products/:id/comments - 상품에 댓글 달기
+// POST /api/products/:id/comments - 상품에 댓글 달기
 app.post(
-  '/products/:id/comments',
+  '/api/products/:id/comments',
   passport.authenticate('jwt', { session: false }),
   async (req, res) => {
     try {
       const productId = parseInt(req.params.id);
       if (isNaN(productId)) {
-        return res.status(400).json({ error: 'Invalid product ID' });
+        return sendErrorResponse(res, 400, 'INVALID_PRODUCT_ID', 'Invalid product ID', { productId: req.params.id });
       }
 
       const { content } = req.body;
 
       if (!content || content.trim() === '') {
-        return res.status(400).json({ error: 'Comment content is required' });
+        return sendErrorResponse(res, 400, 'COMMENT_CONTENT_REQUIRED', 'Comment content is required');
       }
 
       // 상품 존재 확인
@@ -2143,7 +2197,7 @@ app.post(
       });
 
       if (!product) {
-        return res.status(404).json({ error: 'Product not found' });
+        return sendErrorResponse(res, 404, 'PRODUCT_NOT_FOUND', 'Product not found', { productId });
       }
 
       // 댓글 생성
@@ -2166,17 +2220,17 @@ app.post(
       res.status(201).json(comment);
     } catch (err) {
       console.error('Create product comment error', err);
-      res.status(500).json({ error: err.message });
+      sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
     }
   }
 );
 
-// GET /products/:id/comments - 상품 댓글 목록 조회
-app.get('/products/:id/comments', async (req, res) => {
+// GET /api/products/:id/comments - 상품 댓글 목록 조회
+app.get('/api/products/:id/comments', async (req, res) => {
   try {
     const productId = parseInt(req.params.id);
     if (isNaN(productId)) {
-      return res.status(400).json({ error: 'Invalid product ID' });
+      return sendErrorResponse(res, 400, 'INVALID_PRODUCT_ID', 'Invalid product ID', { productId: req.params.id });
     }
 
     const {
@@ -2197,7 +2251,7 @@ app.get('/products/:id/comments', async (req, res) => {
     });
 
     if (!product) {
-      return res.status(404).json({ error: 'Product not found' });
+      return sendErrorResponse(res, 404, 'PRODUCT_NOT_FOUND', 'Product not found', { productId });
     }
 
     const sortOptions = {
@@ -2232,25 +2286,25 @@ app.get('/products/:id/comments', async (req, res) => {
     });
   } catch (err) {
     console.error('Get product comments error', err);
-    res.status(500).json({ error: err.message });
+    sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
   }
 });
 
-// POST /quotes/:id/comments - 견적서에 댓글 달기 (조언 구하기 등)
+// POST /api/quotes/:id/comments - 견적서에 댓글 달기 (조언 구하기 등)
 app.post(
-  '/quotes/:id/comments',
+  '/api/quotes/:id/comments',
   passport.authenticate('jwt', { session: false }),
   async (req, res) => {
     try {
       const quoteId = parseInt(req.params.id);
       if (isNaN(quoteId)) {
-        return res.status(400).json({ error: 'Invalid quote ID' });
+        return sendErrorResponse(res, 400, 'INVALID_QUOTE_ID', 'Invalid quote ID', { quoteId: req.params.id });
       }
 
       const { content } = req.body;
 
       if (!content || content.trim() === '') {
-        return res.status(400).json({ error: 'Comment content is required' });
+        return sendErrorResponse(res, 400, 'COMMENT_CONTENT_REQUIRED', 'Comment content is required');
       }
 
       // 견적서 존재 확인
@@ -2259,7 +2313,7 @@ app.post(
       });
 
       if (!quote) {
-        return res.status(404).json({ error: 'Quote not found' });
+        return sendErrorResponse(res, 404, 'QUOTE_NOT_FOUND', 'Quote not found', { quoteId });
       }
 
       // 댓글 생성
@@ -2282,17 +2336,17 @@ app.post(
       res.status(201).json(comment);
     } catch (err) {
       console.error('Create quote comment error', err);
-      res.status(500).json({ error: err.message });
+      sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
     }
   }
 );
 
-// GET /quotes/:id/comments - 견적서 댓글 목록 조회
-app.get('/quotes/:id/comments', async (req, res) => {
+// GET /api/quotes/:id/comments - 견적서 댓글 목록 조회
+app.get('/api/quotes/:id/comments', async (req, res) => {
   try {
     const quoteId = parseInt(req.params.id);
     if (isNaN(quoteId)) {
-      return res.status(400).json({ error: 'Invalid quote ID' });
+      return sendErrorResponse(res, 400, 'INVALID_QUOTE_ID', 'Invalid quote ID', { quoteId: req.params.id });
     }
 
     const {
@@ -2313,7 +2367,7 @@ app.get('/quotes/:id/comments', async (req, res) => {
     });
 
     if (!quote) {
-      return res.status(404).json({ error: 'Quote not found' });
+      return sendErrorResponse(res, 404, 'QUOTE_NOT_FOUND', 'Quote not found', { quoteId });
     }
 
     const sortOptions = {
@@ -2348,7 +2402,7 @@ app.get('/quotes/:id/comments', async (req, res) => {
     });
   } catch (err) {
     console.error('Get quote comments error', err);
-    res.status(500).json({ error: err.message });
+    sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
   }
 });
 
@@ -2360,7 +2414,7 @@ app.delete(
     try {
       const commentId = parseInt(req.params.id);
       if (isNaN(commentId)) {
-        return res.status(400).json({ error: 'Invalid comment ID' });
+        return sendErrorResponse(res, 400, 'INVALID_COMMENT_ID', 'Invalid comment ID', { commentId: req.params.id });
       }
 
       // 댓글 존재 확인
@@ -2369,12 +2423,12 @@ app.delete(
       });
 
       if (!comment) {
-        return res.status(404).json({ error: 'Comment not found' });
+        return sendErrorResponse(res, 404, 'COMMENT_NOT_FOUND', 'Comment not found', { commentId });
       }
 
       // 본인 또는 ADMIN만 삭제 가능
       if (comment.userId !== req.user.id && req.user.role !== 'ADMIN') {
-        return res.status(403).json({ error: 'Forbidden: cannot delete other users\' comments' });
+        return sendErrorResponse(res, 403, 'COMMENT_FORBIDDEN', 'Forbidden: cannot delete other users\' comments');
       }
 
       // 댓글 삭제
@@ -2385,7 +2439,7 @@ app.delete(
       res.json({ message: 'Comment deleted successfully' });
     } catch (err) {
       console.error('Delete comment error', err);
-      res.status(500).json({ error: err.message });
+      sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
     }
   }
 );
@@ -2402,7 +2456,7 @@ app.post(
     try {
       const productId = parseInt(req.params.id);
       if (isNaN(productId)) {
-        return res.status(400).json({ error: 'Invalid product ID' });
+        return sendErrorResponse(res, 400, 'INVALID_PRODUCT_ID', 'Invalid product ID', { productId: req.params.id });
       }
 
       // 상품 존재 확인
@@ -2411,7 +2465,7 @@ app.post(
       });
 
       if (!product) {
-        return res.status(404).json({ error: 'Product not found' });
+        return sendErrorResponse(res, 404, 'PRODUCT_NOT_FOUND', 'Product not found', { productId });
       }
 
       // 기존 좋아요 확인
@@ -2463,7 +2517,7 @@ app.post(
       });
     } catch (err) {
       console.error('Toggle product like error', err);
-      res.status(500).json({ error: err.message });
+      sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
     }
   }
 );
@@ -2476,7 +2530,7 @@ app.post(
     try {
       const quoteId = parseInt(req.params.id);
       if (isNaN(quoteId)) {
-        return res.status(400).json({ error: 'Invalid quote ID' });
+        return sendErrorResponse(res, 400, 'INVALID_QUOTE_ID', 'Invalid quote ID', { quoteId: req.params.id });
       }
 
       // 견적서 존재 확인
@@ -2485,7 +2539,7 @@ app.post(
       });
 
       if (!quote) {
-        return res.status(404).json({ error: 'Quote not found' });
+        return sendErrorResponse(res, 404, 'QUOTE_NOT_FOUND', 'Quote not found', { quoteId });
       }
 
       // 기존 좋아요 확인
@@ -2537,7 +2591,7 @@ app.post(
       });
     } catch (err) {
       console.error('Toggle quote like error', err);
-      res.status(500).json({ error: err.message });
+      sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
     }
   }
 );
@@ -2635,13 +2689,34 @@ app.get(
       });
     } catch (err) {
       console.error('Get my likes error', err);
-      res.status(500).json({ error: err.message });
+      sendErrorResponse(res, 500, 'INTERNAL_SERVER_ERROR', err.message);
     }
   }
 );
 
+// SPA를 위한 catch-all 라우트: API 경로가 아닌 모든 GET 요청은 index.html 반환
+// Express 5 호환: app.use() 미들웨어 사용
+app.use((req, res, next) => {
+  // GET 요청만 처리
+  if (req.method !== 'GET') {
+    return next();
+  }
+  
+  // API 경로나 인증 경로는 제외
+  if (req.path.startsWith('/api/') || req.path.startsWith('/auth/')) {
+    return next();
+  }
+  
+  // 확장자가 있는 파일 요청은 제외 (정적 파일)
+  if (req.path.includes('.')) {
+    return next();
+  }
+  
+  // 나머지 모든 경로는 index.html 반환 (클라이언트 사이드 라우팅 처리)
+  res.sendFile('index.html', { root: 'src' });
+});
 
-const port = 3000;
+const port = process.env.PORT || 3000;
 
 app.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);

@@ -1,0 +1,78 @@
+services:
+  # MariaDB 데이터베이스
+  db:
+    image: mariadb:10.11
+    container_name: three_d_pc_db
+    restart: unless-stopped
+    # .env 파일에서 환경 변수 자동 로드
+    env_file:
+      - .env
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-rootpassword}
+      MYSQL_DATABASE: ${DATABASE_NAME:-threedpc}
+      MYSQL_USER: ${DATABASE_USER:-threedpc_user}
+      MYSQL_PASSWORD: ${DATABASE_PASSWORD:-threedpc_password}
+    ports:
+      - "${DATABASE_PORT:-3306}:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD:-rootpassword}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app-network
+
+  # 애플리케이션
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: three_d_pc_app
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    # .env 파일에서 환경 변수 자동 로드
+    env_file:
+      - .env
+    environment:
+      # 데이터베이스 연결 정보 (컨테이너 간 통신을 위해 db로 설정)
+      DATABASE_HOST: db
+      DATABASE_PORT: 3306
+      # .env 파일의 값이 자동으로 사용됨 (여기서는 기본값만 지정)
+      DATABASE_USER: ${DATABASE_USER:-threedpc_user}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-threedpc_password}
+      DATABASE_NAME: ${DATABASE_NAME:-threedpc}
+      
+      # JWT 시크릿 (.env 파일에서 읽어옴)
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      
+      # 카카오 OAuth (.env 파일에서 읽어옴)
+      KAKAO_CLIENT_ID: ${KAKAO_CLIENT_ID}
+      KAKAO_CLIENT_SECRET: ${KAKAO_CLIENT_SECRET}
+      KAKAO_CALLBACK_URL: ${KAKAO_CALLBACK_URL}
+      
+      # Firebase (.env 파일에서 읽어옴)
+      FIREBASE_SERVICE_ACCOUNT: ${FIREBASE_SERVICE_ACCOUNT}
+      
+      # Node 환경
+      NODE_ENV: production
+      PORT: ${APP_PORT:-3000}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app-network
+    # Prisma 마이그레이션 실행 (컨테이너 시작 시)
+    command: sh -c "npx prisma migrate deploy --schema=./prisma/schema.prisma && node src/index.js"
+
+volumes:
+  db_data:
+    driver: local
+
+networks:
+  app-network:
+    driver: bridge
+

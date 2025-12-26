@@ -1,0 +1,60 @@
+# Dependencies
+node_modules
+npm-debug.log
+yarn-error.log
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Firebase service account keys (민감한 정보)
+*-firebase-adminsdk-*.json
+firebase-adminsdk-*.json
+threedpc-adacf-firebase-adminsdk-fbsvc-633aa873e6.json
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.*.yml
+
+# Documentation
+README.md
+*.md
+
+# Logs
+logs
+*.log
+
+# Test files
+test
+tests
+*.test.js
+*.spec.js
+
+# Build artifacts
+dist
+build
+.next
+out
+
+# Prisma migrations (선택사항 - 마이그레이션을 이미지에 포함하려면 제거)
+# prisma/migrations
+

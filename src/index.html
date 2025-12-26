@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>3D PC 견적 시스템</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <!-- 네비게이션 바 -->
+    <nav class="navbar">
+      <div class="nav-container">
+        <a href="/" class="nav-logo">3D PC</a>
+        <div class="nav-menu">
+          <a href="/" class="nav-link" data-route="home">홈</a>
+          <a href="/products" class="nav-link" data-route="products">상품</a>
+          <a href="/quotes" class="nav-link" data-route="quotes">견적서</a>
+          <a href="/my-quotes" class="nav-link" data-route="my-quotes">내 견적서</a>
+          <div class="nav-auth" id="navAuth">
+            <a href="/login" class="nav-link" data-route="login">로그인</a>
+          </div>
+        </div>
+      </div>
+    </nav>
+
+    <!-- 메인 컨텐츠 영역 -->
+    <main class="main-content" id="mainContent">
+      <div class="loading-container" id="loadingContainer">
+        <div class="spinner"></div>
+        <p>로딩 중...</p>
+      </div>
+    </main>
+
+    <!-- 모달 컨테이너 -->
+    <div class="modal-overlay" id="modalOverlay" style="display: none;">
+      <div class="modal-content" id="modalContent"></div>
+    </div>
+
+    <!-- 스크립트 -->
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

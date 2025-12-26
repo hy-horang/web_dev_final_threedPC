@@ -16,11 +16,11 @@ RUN npx prisma generate --schema=./prisma/schema.prisma
 COPY src ./src
 
 # 포트 노출
-EXPOSE 3000
+EXPOSE 8080
 
 # 환경 변수 설정
 ENV NODE_ENV=production
-ENV PORT=3000
+ENV PORT=8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \

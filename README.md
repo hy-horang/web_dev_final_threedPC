@@ -52,7 +52,7 @@ PC 부품 견적을 생성하고 공유할 수 있는 웹 애플리케이션입�
    # 카카오 OAuth 설정
    KAKAO_CLIENT_ID=your_kakao_client_id
    KAKAO_CLIENT_SECRET=your_kakao_client_secret
-   KAKAO_CALLBACK_URL=http://localhost:3000/auth/kakao/callback
+   KAKAO_CALLBACK_URL=http://localhost:8080/auth/kakao/callback
    
    # Firebase 서비스 계정 (JSON을 문자열로 변환)
    # Firebase 콘솔에서 서비스 계정 키를 다운로드한 후, JSON 내용을 한 줄로 변환
@@ -116,7 +116,7 @@ PC 부품 견적을 생성하고 공유할 수 있는 웹 애플리케이션입�
    # Firebase 서비스 계정
    FIREBASE_SERVICE_ACCOUNT='{"type":"service_account",...}'
    
-   # 애플리케이션 포트 (선택사항, 기본값: 3000)
+   # 애플리케이션 포트 (선택사항, 기본값: 8080)
    PORT=8080
    APP_PORT=8080
    ```
@@ -133,22 +133,22 @@ PC 부품 견적을 생성하고 공유할 수 있는 웹 애플리케이션입�
    **SQL 명령어 실행:**
    ```sql
    -- 데이터베이스 생성
-   CREATE DATABASE threedpc CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+   CREATE DATABASE threedpc_db;
    
    -- 사용자 생성 및 권한 부여
-   CREATE USER 'your_db_user'@'localhost' IDENTIFIED BY 'your_db_password';
-   GRANT ALL PRIVILEGES ON threedpc.* TO 'your_db_user'@'localhost';
+   CREATE USER 'threedpc_user'@'localhost' IDENTIFIED BY 'your_db_password';
+   GRANT ALL PRIVILEGES ON threedpc.* TO 'threedpc_user'@'localhost';
    FLUSH PRIVILEGES;
    
    -- 확인
    SHOW DATABASES;
-   SELECT user, host FROM mysql.user WHERE user = 'your_db_user';
+   SELECT user, host FROM mysql.user WHERE user = 'threedpc_user';
    ```
    
    > **참고:** 
-   > - `your_db_user`와 `your_db_password`는 `.env` 파일에 설정한 값과 동일해야 합니다.
+   > - `threedpc_user`와 `your_db_password`는 `.env` 파일에 설정한 값과 동일해야 합니다.
    > - `threedpc`는 `.env` 파일의 `DATABASE_NAME`과 동일해야 합니다.
-   > - 원격 접속이 필요한 경우 `'your_db_user'@'%'`로 사용자를 생성하세요.
+   > - 원격 접속이 필요한 경우 `'threedpc_user'@'%'`로 사용자를 생성하세요.
 
 4. **의존성 설치**
    ```bash
@@ -244,7 +244,7 @@ three_d_pc/
 
 ### 포트 변경하기
 
-3000번 포트를 사용할 수 없는 경우 (예: 학교 클라우드 컴퓨터 등), `.env` 파일에서 `APP_PORT`를 변경하세요:
+8080번 포트를 사용할 수 없는 경우 (예: 학교 클라우드 컴퓨터 등), `.env` 파일에서 `APP_PORT`를 변경하세요:
 
 ```env
 # 예: 8080 포트 사용
@@ -259,74 +259,7 @@ KAKAO_CALLBACK_URL=http://your-domain:8080/auth/kakao/callback
 2. `KAKAO_CALLBACK_URL`도 새로운 포트에 맞게 변경
 3. Docker Compose를 재시작: `docker-compose down && docker-compose up -d`
 
-## 문제 해결
 
-### 데이터베이스 연결 실패
-
-**Docker 사용 시:**
-```bash
-# 데이터베이스 컨테이너 상태 확인
-docker-compose ps db
-
-# 데이터베이스 로그 확인
-docker-compose logs db
-```
-
-**로컬 사용 시:**
-- MariaDB/MySQL이 실행 중인지 확인
-  ```bash
-  # macOS (Homebrew)
-  brew services list
-  
-  # Linux (systemd)
-  sudo systemctl status mariadb
-  # 또는
-  sudo systemctl status mysql
-  ```
-
-- 데이터베이스와 사용자가 생성되어 있는지 확인
-  ```bash
-  mysql -u root -p
-  ```
-  ```sql
-  -- 데이터베이스 확인
-  SHOW DATABASES;
-  
-  -- 사용자 확인
-  SELECT user, host FROM mysql.user WHERE user = 'your_db_user';
-  
-  -- 권한 확인
-  SHOW GRANTS FOR 'your_db_user'@'localhost';
-  ```
-
-- `.env` 파일의 데이터베이스 연결 정보 확인
-  - `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_USER`, `DATABASE_PASSWORD`, `DATABASE_NAME`이 올바른지 확인
-  - 데이터베이스와 사용자가 실제로 존재하는지 확인
-
-- 연결 테스트
-  ```bash
-  mysql -u your_db_user -p -h localhost threedpc
-  ```
-
-### Prisma 클라이언트 생성 실패
-
-```bash
-# 수동으로 Prisma 클라이언트 생성
-npx prisma generate
-```
-
-### 데이터베이스 스키마 적용 실패
-
-```bash
-# 스키마를 데이터베이스에 직접 적용 (개발 환경)
-npx prisma db push
-
-# 마이그레이션 상태 확인 (마이그레이션 사용 시)
-npx prisma migrate status
-
-# 마이그레이션 재실행 (마이그레이션 사용 시)
-npx prisma migrate deploy
-```
 
 ## 보안 주의사항
 
@@ -334,12 +267,4 @@ npx prisma migrate deploy
 - `.env` 파일은 절대 Git에 커밋하지 마세요
 - 프로덕션 환경에서는 강력한 JWT 시크릿 키를 사용하세요
 - Firebase 서비스 계정 키는 절대 공개하지 마세요
-
-## 라이선스
-
-ISC
-
-## 기여
-
-이슈 및 풀 리퀘스트를 환영합니다!
 

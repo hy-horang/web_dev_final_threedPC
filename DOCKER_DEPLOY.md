@@ -16,7 +16,9 @@
 ```env
 # 데이터베이스 설정
 DATABASE_HOST=db
-DATABASE_PORT=3306
+# 외부 포트 (로컬 MySQL과 충돌 방지를 위해 기본값 3307 사용)
+# 로컬에 MySQL이 없으면 3306으로 변경 가능
+DATABASE_PORT=3307
 DATABASE_USER=threedpc_user
 DATABASE_PASSWORD=your_secure_password_here
 DATABASE_NAME=threedpc
@@ -29,30 +31,22 @@ JWT_REFRESH_SECRET=your-super-secret-jwt-refresh-key-change-this
 # 카카오 OAuth 설정
 KAKAO_CLIENT_ID=your_kakao_client_id
 KAKAO_CLIENT_SECRET=your_kakao_client_secret
-KAKAO_CALLBACK_URL=http://localhost:3000/auth/kakao/callback
+KAKAO_CALLBACK_URL=http://localhost:8080/auth/kakao/callback
 
 # Firebase 서비스 계정 (JSON을 문자열로 변환)
 # Firebase 콘솔에서 서비스 계정 키를 다운로드한 후, JSON 내용을 한 줄로 변환하여 설정
 # 예: FIREBASE_SERVICE_ACCOUNT='{"type":"service_account","project_id":"..."}'
 FIREBASE_SERVICE_ACCOUNT='{"type":"service_account",...}'
 
-# 애플리케이션 포트 (선택사항, 기본값: 3000)
-APP_PORT=3000
+# 애플리케이션 포트 (선택사항, 기본값: 8080)
+APP_PORT=8080
 ```
 
-### 2. Firebase 서비스 계정 JSON 변환
+### 2. Firebase 서비스 계정 설정
 
-Firebase 서비스 계정 JSON 파일을 환경 변수로 변환하는 방법:
+Firebase 콘솔에서 서비스 계정 키를 다운로드한 후, JSON 파일의 전체 내용을 한 줄로 변환하여 `.env` 파일의 `FIREBASE_SERVICE_ACCOUNT`에 설정하세요.
 
-```bash
-# 방법 1: jq 사용
-cat threedpc-adacf-firebase-adminsdk-fbsvc-633aa873e6.json | jq -c | tr -d '\n' > firebase_account.txt
-
-# 방법 2: Python 사용
-python3 -c "import json; print(json.dumps(json.load(open('threedpc-adacf-firebase-adminsdk-fbsvc-633aa873e6.json'))))" | tr -d '\n'
-```
-
-생성된 문자열을 `.env` 파일의 `FIREBASE_SERVICE_ACCOUNT`에 설정하세요.
+> **참고:** JSON 파일의 내용을 그대로 복사하여 한 줄로 만들어서 설정하면 됩니다.
 
 ### 3. Docker Compose로 실행
 
@@ -68,17 +62,20 @@ docker-compose logs -f app
 docker-compose logs -f db
 ```
 
-### 4. 데이터베이스 마이그레이션
+### 4. 데이터베이스 스키마 적용
 
-Prisma 마이그레이션이 자동으로 실행됩니다. 수동으로 실행하려면:
+Prisma 스키마가 자동으로 데이터베이스에 적용됩니다 (`prisma db push`). 수동으로 실행하려면:
 
 ```bash
 # 컨테이너 내부에서 실행
-docker-compose exec app npx prisma migrate deploy
+docker-compose exec app npx prisma db push
 
 # 또는 로컬에서 실행 (DATABASE_HOST를 localhost로 설정)
-npx prisma migrate deploy
+npx prisma db push
 ```
+
+> **참고:** `prisma db push`는 개발 환경에서 스키마를 데이터베이스에 직접 적용합니다. 
+> 프로덕션 환경에서는 `npx prisma migrate deploy`를 사용하는 것을 권장합니다.
 
 ## 개별 Docker 명령어 사용
 
@@ -98,14 +95,14 @@ docker run -d \
   -e MYSQL_DATABASE=threedpc \
   -e MYSQL_USER=threedpc_user \
   -e MYSQL_PASSWORD=threedpc_password \
-  -p 3306:3306 \
+  -p 3307:3306 \
   mariadb:10.11
 
 # 애플리케이션 실행
 docker run -d \
   --name three_d_pc_app \
   --link three_d_pc_db:db \
-  -p 3000:3000 \
+  -p 8080:8080 \
   --env-file .env \
   three_d_pc:latest
 ```
@@ -178,7 +175,7 @@ server {
     server_name your-domain.com;
 
     location / {
-        proxy_pass http://localhost:3000;
+        proxy_pass http://localhost:8080;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
@@ -211,11 +208,11 @@ docker-compose exec -T db mysql -u threedpc_user -p threedpc < backup.sql
 
 ### 포트 충돌
 
-다른 애플리케이션이 3000 포트를 사용 중인 경우:
+다른 애플리케이션이 8080 포트를 사용 중인 경우:
 
 ```bash
 # .env 파일에서 포트 변경
-APP_PORT=3001
+APP_PORT=8081
 ```
 
 ### 데이터베이스 연결 실패
@@ -242,13 +239,16 @@ APP_PORT=3001
 docker-compose exec app npx prisma generate
 ```
 
-### 마이그레이션 실패
+### 데이터베이스 스키마 적용 실패
 
 ```bash
-# 마이그레이션 상태 확인
+# 스키마를 데이터베이스에 직접 적용 (개발 환경)
+docker-compose exec app npx prisma db push
+
+# 마이그레이션 상태 확인 (마이그레이션 사용 시)
 docker-compose exec app npx prisma migrate status
 
-# 마이그레이션 재실행
+# 마이그레이션 재실행 (마이그레이션 사용 시)
 docker-compose exec app npx prisma migrate deploy
 ```
 
@@ -288,7 +288,7 @@ services:
 애플리케이션은 `/health` 엔드포인트를 제공합니다:
 
 ```bash
-curl http://localhost:3000/health
+curl http://localhost:8080/health
 ```
 
 ### 로그 모니터링

@@ -901,9 +901,9 @@ app.get('/api/categories', async (req, res) => {
   }
 });
 
-// POST /categories - [Admin] 신규 카테고리 생성
+// POST /api/categories - [Admin] 신규 카테고리 생성
 app.post(
-  '/categories',
+  '/api/categories',
   passport.authenticate('jwt', { session: false }),
   checkRole('ADMIN'),
   async (req, res) => {
@@ -952,9 +952,9 @@ app.post(
   }
 );
 
-// PUT /categories/:id - [Admin] 카테고리 이름 수정
+// PUT /api/categories/:id - [Admin] 카테고리 이름 수정
 app.put(
-  '/categories/:id',
+  '/api/categories/:id',
   passport.authenticate('jwt', { session: false }),
   checkRole('ADMIN'),
   async (req, res) => {
@@ -2716,7 +2716,7 @@ app.use((req, res, next) => {
   res.sendFile('index.html', { root: 'src' });
 });
 
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 8080;
 
 app.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);

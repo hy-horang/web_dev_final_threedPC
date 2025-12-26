@@ -7,7 +7,7 @@ info:
     name: API Support
 
 servers:
-  - url: http://localhost:3000
+  - url: http://localhost:8080
     description: Local development server
   - url: https://api.example.com
     description: Production server

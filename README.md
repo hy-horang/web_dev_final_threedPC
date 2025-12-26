@@ -37,11 +37,11 @@ PC 부품 견적을 생성하고 공유할 수 있는 웹 애플리케이션입�
    
    ```env
    # 데이터베이스 설정
-   DATABASE_HOST=db
+   DATABASE_HOST=localhost
    DATABASE_PORT=3306
    DATABASE_USER=threedpc_user
    DATABASE_PASSWORD=your_secure_password_here
-   DATABASE_NAME=threedpc
+   DATABASE_NAME=threedpc_db
    # DB_ROOT_PASSWORD는 Docker Compose에서 MariaDB 컨테이너의 root 비밀번호 설정용 (선택사항, 기본값: rootpassword)
    DB_ROOT_PASSWORD=your_root_password_here
    
@@ -102,7 +102,7 @@ PC 부품 견적을 생성하고 공유할 수 있는 웹 애플리케이션입�
    DATABASE_PORT=3306
    DATABASE_USER=your_db_user
    DATABASE_PASSWORD=your_db_password
-   DATABASE_NAME=threedpc
+   DATABASE_NAME=threedpc_db
    
    # JWT 시크릿 키
    JWT_ACCESS_SECRET=your-super-secret-jwt-access-key-change-this
